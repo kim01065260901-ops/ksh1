@@ -85,11 +85,13 @@ export default function App() {
   const [playerName, setPlayerName] = useState('');
   const [gameStarted, setGameStarted] = useState(false);
   const [gameOver, setGameOver] = useState(false);
+  const [isNewRecord, setIsNewRecord] = useState(false);
   const [targetNumber, setTargetNumber] = useState(0);
   const [currentGuess, setCurrentGuess] = useState('');
   const [history, setHistory] = useState<{ num: number; result: string }[]>([]);
   const [bestRecord, setBestRecord] = useState<GameRecord | null>(null);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   
   const [seconds, setSeconds] = useState(0);
   const timerRef = useRef<number | null>(null);
@@ -101,20 +103,24 @@ export default function App() {
 
   const fetchBestRecord = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from('records')
-      .select('*')
-      .order('attempts', { ascending: true })
-      .order('seconds', { ascending: true })
-      .limit(1)
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from('records')
+        .select('*')
+        .order('attempts', { ascending: true })
+        .order('seconds', { ascending: true })
+        .limit(1);
 
-    if (!error && data) {
-      setBestRecord(data);
-    } else {
-      setBestRecord(null);
+      if (!error && data && data.length > 0) {
+        setBestRecord(data[0]);
+      } else {
+        setBestRecord(null);
+      }
+    } catch (err) {
+      console.error("Error fetching record:", err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const startGame = () => {
@@ -122,9 +128,11 @@ export default function App() {
       alert('이름을 입력해주세요!');
       return;
     }
-    setTargetNumber(Math.floor(Math.random() * MAX_NUMBER) + MIN_NUMBER);
+    const target = Math.floor(Math.random() * MAX_NUMBER) + MIN_NUMBER;
+    setTargetNumber(target);
     setGameStarted(true);
     setGameOver(false);
+    setIsNewRecord(false);
     setHistory([]);
     setSeconds(0);
     setCurrentGuess('');
@@ -138,6 +146,8 @@ export default function App() {
 
   const handleGuess = (e: React.FormEvent) => {
     e.preventDefault();
+    if (gameOver) return;
+
     const num = parseInt(currentGuess);
     if (isNaN(num) || num < MIN_NUMBER || num > MAX_NUMBER) {
       alert(`${MIN_NUMBER}~${MAX_NUMBER} 사이의 숫자를 입력해주세요.`);
@@ -154,25 +164,40 @@ export default function App() {
     setCurrentGuess('');
 
     if (result === '정답!') {
-      handleWin(newHistory.length);
+      handleWin(newHistory.length, seconds);
     }
   };
 
-  const handleWin = async (attempts: number) => {
+  const handleWin = async (attempts: number, finalSeconds: number) => {
     setGameOver(true);
-    if (timerRef.current) clearInterval(timerRef.current);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
 
+    // Comparison Logic: Fewer attempts OR (same attempts and faster time)
     const isBetter = !bestRecord || 
       (attempts < bestRecord.attempts) || 
-      (attempts === bestRecord.attempts && seconds < bestRecord.seconds);
+      (attempts === bestRecord.attempts && finalSeconds < bestRecord.seconds);
 
     if (isBetter) {
-      const { error } = await supabase
-        .from('records')
-        .insert([{ name: playerName, attempts, seconds }]);
-      
-      if (!error) {
-        fetchBestRecord();
+      setSaving(true);
+      setIsNewRecord(true);
+      try {
+        const { error } = await supabase
+          .from('records')
+          .insert([{ name: playerName.trim(), attempts, seconds: finalSeconds }]);
+        
+        if (!error) {
+          // Refresh best record after saving
+          await fetchBestRecord();
+        } else {
+          console.error("Supabase Save Error:", error.message);
+        }
+      } catch (err) {
+        console.error("Unexpected error saving record:", err);
+      } finally {
+        setSaving(false);
       }
     }
   };
@@ -180,9 +205,14 @@ export default function App() {
   const resetToMain = () => {
     setGameStarted(false);
     setGameOver(false);
+    setIsNewRecord(false);
     setPlayerName('');
     setHistory([]);
-    if (timerRef.current) clearInterval(timerRef.current);
+    setSeconds(0);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
   };
 
   return (
@@ -207,12 +237,13 @@ export default function App() {
             </div>
             <button 
               onClick={startGame}
-              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl shadow-lg shadow-indigo-200 transition-all active:scale-95 text-lg"
+              disabled={loading}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl shadow-lg shadow-indigo-200 transition-all active:scale-95 text-lg disabled:opacity-50"
             >
-              게임 시작하기
+              {loading ? '기록 불러오는 중...' : '게임 시작하기'}
             </button>
             <div className="mt-8 text-center text-slate-400 text-xs">
-              <p>행운을 빕니다!</p>
+              <p>최고의 기록에 도전하세요!</p>
             </div>
           </div>
         </div>
@@ -223,6 +254,12 @@ export default function App() {
             
             {gameOver && (
               <div className="absolute inset-0 bg-white/95 z-20 flex flex-col items-center justify-center p-6 text-center animate-in fade-in zoom-in duration-300">
+                {isNewRecord && (
+                   <div className="absolute top-4 bg-yellow-400 text-yellow-900 text-xs font-black px-4 py-1 rounded-full shadow-sm animate-bounce">
+                     NEW RECORD!
+                   </div>
+                )}
+                
                 <div className="text-6xl mb-4 text-yellow-400 animate-bounce-subtle">
                   <i className="fa-solid fa-trophy"></i>
                 </div>
@@ -230,21 +267,38 @@ export default function App() {
                 <p className="text-slate-500 mb-6">정답은 <span className="text-indigo-600 font-bold">{targetNumber}</span>이었습니다.</p>
                 
                 <div className="grid grid-cols-2 gap-4 w-full mb-8">
-                  <div className="bg-slate-50 p-4 rounded-2xl">
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
                     <p className="text-xs text-slate-400 font-bold uppercase">시도 횟수</p>
                     <p className="text-2xl font-black text-slate-700">{history.length}회</p>
                   </div>
-                  <div className="bg-slate-50 p-4 rounded-2xl">
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
                     <p className="text-xs text-slate-400 font-bold uppercase">소요 시간</p>
                     <p className="text-2xl font-black text-slate-700">{seconds}초</p>
                   </div>
                 </div>
 
+                {saving ? (
+                  <div className="flex items-center gap-3 text-indigo-600 font-bold mb-4">
+                    <i className="fa-solid fa-circle-notch animate-spin"></i>
+                    기록 저장 중...
+                  </div>
+                ) : isNewRecord ? (
+                  <div className="text-green-600 font-bold mb-4 flex items-center gap-2">
+                    <i className="fa-solid fa-check-circle"></i>
+                    새로운 최고 기록이 저장되었습니다!
+                  </div>
+                ) : (
+                  <div className="text-slate-400 text-sm mb-4">
+                    최고 기록 경신에는 실패했지만 훌륭합니다!
+                  </div>
+                )}
+
                 <button 
                   onClick={resetToMain}
-                  className="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl hover:bg-indigo-700 transition-all mb-3 shadow-md"
+                  disabled={saving}
+                  className="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl hover:bg-indigo-700 transition-all mb-3 shadow-md disabled:opacity-50"
                 >
-                  다시 하기
+                  메인으로 가기
                 </button>
               </div>
             )}
@@ -271,33 +325,37 @@ export default function App() {
                   placeholder="?"
                   className="w-full text-center text-6xl font-black py-8 rounded-2xl border-4 border-slate-50 focus:border-indigo-100 focus:outline-none transition-all"
                   autoFocus
+                  disabled={gameOver}
                   min={MIN_NUMBER}
                   max={MAX_NUMBER}
                 />
                 <button 
                   type="submit"
-                  className="absolute bottom-2 right-2 bg-indigo-600 text-white w-12 h-12 rounded-xl flex items-center justify-center hover:bg-indigo-700 shadow-lg active:scale-90 transition-all"
+                  disabled={gameOver}
+                  className="absolute bottom-2 right-2 bg-indigo-600 text-white w-12 h-12 rounded-xl flex items-center justify-center hover:bg-indigo-700 shadow-lg active:scale-90 transition-all disabled:opacity-50"
                 >
                   <i className="fa-solid fa-paper-plane"></i>
                 </button>
               </div>
               <p className="text-center text-slate-400 mt-4 text-sm font-medium">
-                1부터 100 사이의 숫자를 추측해 보세요
+                1부터 100 사이의 숫자를 입력하고 전송하세요
               </p>
             </form>
 
             <GuessHistory history={history} />
           </div>
 
-          <button 
-            onClick={() => {
-              if (confirm('게임을 포기하시겠습니까?')) resetToMain();
-            }}
-            className="mt-6 text-slate-400 hover:text-red-500 font-semibold text-sm transition-colors flex items-center justify-center gap-2"
-          >
-            <i className="fa-solid fa-rotate-left"></i>
-            포기하고 돌아가기
-          </button>
+          {!gameOver && (
+            <button 
+              onClick={() => {
+                if (confirm('게임을 포기하시겠습니까?')) resetToMain();
+              }}
+              className="mt-6 text-slate-400 hover:text-red-500 font-semibold text-sm transition-colors flex items-center justify-center gap-2"
+            >
+              <i className="fa-solid fa-rotate-left"></i>
+              포기하고 메인으로
+            </button>
+          )}
         </div>
       )}
     </div>
