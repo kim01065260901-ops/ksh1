@@ -1,0 +1,5 @@
+{
+  "name": "Super Number Guess Master",
+  "description": "A sophisticated 1-100 number guessing game with a global leaderboard, real-time timer, and persistent record tracking using Supabase.",
+  "requestFramePermissions": []
+}
